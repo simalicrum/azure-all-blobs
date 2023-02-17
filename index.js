@@ -27,14 +27,29 @@ const options = program.opts();
 const logFileName = `${logFileDir}${format(new Date(), "yyyy-MM-dd'T'hh-mm-ss")}.log`;
 const logger = createLogger(logFileName);
 
+let filters;
+if (options.yamlInputFile) {
+  const yaml = fs.readFileSync(options.yamlInputFile, { encoding: 'utf-8' });
+  filters = parse(yaml);
+}
+
+// console.log(filters);
+
 // Get the full list of Azure Blob Storage accounts under a given
 // subscription ID then get the storage account keys
 logger.info(msgLog('Getting Azure Storage account list'));
 const storageAccountsAsync = storageAccountList(subscriptionId);
 const storageAccounts = [];
 for await (const storageAccount of storageAccountsAsync) {
-  storageAccounts.push(storageAccount);
+  if (options.yamlInputFile) {
+    if (filters.accounts.some(element => element.name === storageAccount.name)) {
+      storageAccounts.push(storageAccount);
+    }
+  } else {
+    storageAccounts.push(storageAccount);
+  }
 }
+
 const storageAccountsWithKeys = [];
 for (const storageAccount of storageAccounts) {
   const [match, resourceGroup] = storageAccount.id.match(/\/resourceGroups\/(.*?)\//);
@@ -54,10 +69,15 @@ for (const storageAccount of storageAccounts) {
 for (const storageAccount of storageAccountsWithKeys) {
   logger.info(msgLog(`Starting file scan on storage account ${storageAccount.name}.`));
   for await (const container of listContainers(storageAccount.name, storageAccount.keys[0].value)) {
-    const path = `${storageAccount.id}/${container.name}`;
-    // const base = `${path.replace(/\.|\//g, '_')}`;
+    if (options.yamlInputFile) {
+      const accountFilter = filters.accounts.find(element => element.name === storageAccount.name);
+      if (accountFilter.hasOwnProperty('containers')) {
+        if (!accountFilter.containers.some(element => element === container.name)) {
+          continue;
+        }
+      }
+    }
     const base = uuidv4();
-    const prefix = `${fileListDir}${base}`;
     let outputPath;
     logger.info(msgLog(`Starting file scan on container ${container.name}.`));
     let bytes = 98;
