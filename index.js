@@ -4,11 +4,11 @@ import Papa from 'papaparse';
 import fs from 'fs';
 import { Blob } from 'node:buffer';
 import { format } from 'date-fns';
-import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '@simalicrum/logger';
 import { msgLog } from './log.js';
-import { parse, stringify } from 'yaml'
+import { parse } from 'yaml'
 import { program } from "commander";
+import md5 from 'md5';
 import { storageAccountList, storageAccountListKeys, listBlobsFlat, listContainers, createBlobFromLocalPath } from '@simalicrum/azure-helpers';
 
 import { subscriptionId } from './config/azure.js';
@@ -77,8 +77,8 @@ for (const storageAccount of storageAccountsWithKeys) {
         }
       }
     }
-    const base = uuidv4();
-    let outputPath;
+    const base = md5(storageAccount.name);
+    let outputPath, suffix, destBlob;
     logger.info(msgLog(`Starting file scan on container ${container.name}.`));
     let bytes = 98;
     let volume = 0;
@@ -99,13 +99,25 @@ for (const storageAccount of storageAccountsWithKeys) {
       )
       // Format blob info into CSV format at write it to file
       const rows = Papa.unparse(blobs, { header: false, delimiter: ',' });
-      // Azure Search Service is limited to 
+      // Azure Search Service is limited to 16MB so slice the file output
+      // into segments
+      suffix = `${storageAccount.name}/${container.name}/${base}-${volume}.csv`;
+      outputPath = `${fileListDir}${suffix}`;
+      destBlob = `${destUrl}/${suffix}`;
       bytes += new Blob([rows]).size;
       if (bytes > 16000000) {
+        const res = await createBlobFromLocalPath(destBlob, key, outputPath, {}, () => { });
+        if (res === 201) {
+          logger.info(msgLog(`Output CSV successfully written to blob storage: ${destBlob}`));
+        } else if (res === 200) {
+          logger.info(msgLog(`Skipped writting output CSV, file size is equal: ${destBlob}`));
+        } else {
+          console.log(res);
+          throw new Error("Couldn't write blob to destination");
+        }
         volume++
         bytes = new Blob([rows]).size;
       }
-      outputPath = `${fileListDir}${storageAccount.name}/${container.name}/${base}-${volume}.csv`;
       if (!fs.existsSync(outputPath)) {
         fs.mkdirSync(`${fileListDir}${storageAccount.name}/${container.name}/`, { recursive: true });
         fs.writeFileSync(outputPath, 'name,account,container,ResourceType,createdOn,lastModified,contentLength,contentMD5,accessTier\r\n');
@@ -113,9 +125,6 @@ for (const storageAccount of storageAccountsWithKeys) {
       fs.appendFileSync(outputPath, `${rows}\r\n`, { encoding: 'utf8' });
     }
     // Copy the local blob listing CSV to blob storage
-    const destBlob = `${destUrl}${outputPath}`;
-    console.log("destBlob: ", destBlob);
-    console.log("outputPath: ", outputPath);
     const res = await createBlobFromLocalPath(destBlob, key, outputPath, {}, () => { });
     if (res === 201) {
       logger.info(msgLog(`Output CSV successfully written to blob storage: ${destBlob}`));
